@@ -1,19 +1,56 @@
 import win32evtlog
+import platform
+import subprocess
+import os
+import psutil
 from tabulate import tabulate
+from datetime import datetime
 
 EVENT_LEVELS = {
-    "Critical": win32evtlog.EVENTLOG_ERROR_TYPE,     # Windows doesn't have a separate Critical
-    "Error": win32evtlog.EVENTLOG_ERROR_TYPE,
-    "Warning": win32evtlog.EVENTLOG_WARNING_TYPE,
-    "Information": win32evtlog.EVENTLOG_INFORMATION_TYPE,
-    "Verbose": win32evtlog.EVENTLOG_INFORMATION_TYPE  # Windows doesn't label as Verbose
+    1: ("Critical", win32evtlog.EVENTLOG_ERROR_TYPE),
+    2: ("Error", win32evtlog.EVENTLOG_ERROR_TYPE),
+    3: ("Warning", win32evtlog.EVENTLOG_WARNING_TYPE),
+    4: ("Information", win32evtlog.EVENTLOG_INFORMATION_TYPE),
+    5: ("Verbose", win32evtlog.EVENTLOG_INFORMATION_TYPE)
 }
+
+def get_system_info():
+    return {
+        "Hostname": platform.node(),
+        "OS": platform.system(),
+        "Release": platform.release(),
+        "Architecture": platform.machine(),
+        "Processor": platform.processor()
+    }
+
+def list_users():
+    try:
+        users = psutil.users()
+        return [f"{u.name} ({u.host})" for u in users]
+    except Exception as e:
+        return [f"Error: {e}"]
+
+def check_admin_users():
+    try:
+        result = subprocess.check_output(['net', 'localgroup', 'Administrators'], stderr=subprocess.DEVNULL).decode()
+        return result.strip().split('\n')[4:-2]  # Trim header/footer
+    except Exception as e:
+        return [f"Error: {e}"]
+
+def check_updates():
+    return ["Use PowerShell: Get-WindowsUpdate or check Windows Update GUI."]
+
+def check_firewall():
+    try:
+        result = subprocess.check_output(['powershell', '-Command', 'Get-NetFirewallProfile | Format-Table Name, Enabled'], stderr=subprocess.DEVNULL).decode()
+        return result.strip().split('\n')
+    except Exception as e:
+        return [f"Error: {e}"]
 
 def read_event_log(log_type='System', level_filter=None, max_events=50):
     hand = win32evtlog.OpenEventLog('localhost', log_type)
     flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
     events_data = []
-
     while True:
         events = win32evtlog.ReadEventLog(hand, flags, 0)
         if not events:
@@ -36,19 +73,34 @@ def read_event_log(log_type='System', level_filter=None, max_events=50):
     return events_data
 
 def main():
-    print("Choose Event Log Level:")
-    for level in EVENT_LEVELS:
-        print(f"- {level}")
-    user_choice = input("Enter level: ").strip().capitalize()
-    level_code = EVENT_LEVELS.get(user_choice)
+    print("\n📋 ISO 27001 Windows Audit Report")
+    print(tabulate(get_system_info().items(), tablefmt='fancy_grid', headers=["Parameter", "Value"]))
 
-    if not level_code:
-        print("⚠️ Invalid choice. Showing all event types.")
-        level_code = None
+    print("\n👥 Logged-in Users (A.9.2.3)")
+    print("\n".join(list_users()))
 
-    for log_type in ['System', 'Application', 'Security']:
-        print(f"\n📘 {log_type} Log – {user_choice or 'All'} Events:")
-        logs = read_event_log(log_type=log_type, level_filter=level_code)
+    print("\n🔐 Admin Users (A.9.2.3)")
+    print("\n".join(check_admin_users()))
+
+    print("\n🛡️ Firewall Status (A.13.1.1)")
+    print("\n".join(check_firewall()))
+
+    print("\n📦 Patch Status (A.12.6.1)")
+    print("\n".join(check_updates()))
+
+    print("\n🧠 Choose Event Log Level to Inspect:")
+    for num, (label, _) in EVENT_LEVELS.items():
+        print(f"{num}: {label}")
+    try:
+        choice = int(input("Enter level number (or 0 for all): ").strip())
+    except ValueError:
+        choice = 0
+
+    label, level_code = EVENT_LEVELS.get(choice, ("All", None))
+
+    for log in ['System', 'Application', 'Security']:
+        print(f"\n📘 {log} Log – {label} Events:")
+        logs = read_event_log(log_type=log, level_filter=level_code)
         headers = ["Event ID", "Time", "Source", "Category", "Type", "Message"]
         print(tabulate(logs, headers=headers, tablefmt="fancy_grid"))
 
